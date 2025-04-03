@@ -11,7 +11,7 @@ from .completion.run_completion import run_completion
 
 def read_system_prompt() -> str:
     """Read and process the system prompt template."""
-    template_path = Path(__file__).parent / "templates" / "system_prompt.md"
+    template_path = Path(__file__).parent / "templates" / "system_prompt.txt"
     with open(template_path, "r") as f:
         content = f.read()
 
