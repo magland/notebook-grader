@@ -14,7 +14,8 @@ def cli():
 @click.option('--log-file', '-l', type=click.Path(dir_okay=False, path_type=Path), help='File to write verbose logs to')
 @click.option('--auto', is_flag=True, help='Run in automatic mode where no user input is required')
 @click.option('--output-notebook', type=click.Path(dir_okay=False, path_type=Path), help='Path to write the graded notebook to')
-def grade_notebook_cmd(notebook_path_or_url: str, model: str | None, vision_model: str | None, log_file: Path | None, auto: bool, output_notebook: Path | None):
+@click.option('--output-json', required=True, type=click.Path(dir_okay=False, path_type=Path), help='Path to write the grading results JSON')
+def grade_notebook_cmd(notebook_path_or_url: str, model: str | None, vision_model: str | None, log_file: Path | None, auto: bool, output_notebook: Path | None, output_json: Path):
     """Grade a Python Jupyter notebook by identifying problems.
 
     Recommended OpenRouter Models:
@@ -29,7 +30,8 @@ def grade_notebook_cmd(notebook_path_or_url: str, model: str | None, vision_mode
         vision_model=vision_model,
         log_file=log_file,
         auto=auto,
-        output_notebook=output_notebook
+        output_notebook=output_notebook,
+        output_json=output_json
     )
 
 if __name__ == "__main__":

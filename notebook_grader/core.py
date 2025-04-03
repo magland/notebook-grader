@@ -14,7 +14,13 @@ def read_system_prompt() -> str:
     template_path = Path(__file__).parent / "templates" / "system_prompt.txt"
     with open(template_path, "r") as f:
         content = f.read()
+    return content
 
+def read_user_message() -> str:
+    """Read and process the user message template."""
+    template_path = Path(__file__).parent / "templates" / "user_message.txt"
+    with open(template_path, "r") as f:
+        content = f.read()
     return content
 
 class TeeOutput:
@@ -41,9 +47,42 @@ class GradeNotebookResult:
     total_vision_prompt_tokens: int
     total_vision_completion_tokens: int
     output_notebook_path: Path | None = None
+    output_json_path: Path | None = None
 
-def create_grading_markdown_cell(problems: List[Dict[str, str]]) -> Dict[str, Any]:
-    """Create a markdown cell containing the grading information."""
+def parse_assistant_response(response: str) -> Tuple[Dict[str, str], List[Dict[str, str]]]:
+    """Parse the assistant's response to extract rating and problems.
+
+    Returns:
+        Tuple containing:
+        - Rating dict with 'quality' and 'rational' keys
+        - List of problem dicts, each with 'type', 'description', and 'severity' keys
+    """
+    import re
+    rating = {}
+    problems = []
+
+    # Extract rating block
+    rating_match = re.search(r'<rating>\s*<quality>(.*?)</quality>\s*<rational>(.*?)</rational>\s*</rating>',
+                           response, re.DOTALL)
+    if rating_match:
+        rating['quality'] = rating_match.group(1).strip()
+        rating['rational'] = rating_match.group(2).strip()
+
+    # Extract all problem blocks
+    problem_matches = re.finditer(
+        r'<problem>\s*<type>(.*?)</type>\s*<description>(.*?)</description>\s*<severity>(.*?)</severity>\s*</problem>',
+        response, re.DOTALL
+    )
+    for match in problem_matches:
+        problems.append({
+            'type': match.group(1).strip(),
+            'description': match.group(2).strip(),
+            'severity': match.group(3).strip()
+        })
+
+    return rating, problems
+
+def create_grading_markdown_cell(assistant_response: str) -> Dict[str, Any]:
     severity_icons = {
         'low': '⚠️',
         'medium': '⛔',
@@ -52,21 +91,28 @@ def create_grading_markdown_cell(problems: List[Dict[str, str]]) -> Dict[str, An
     }
 
     markdown_content = [
-        '<div style="background-color: #f8f8f8; border-left: 4px solid #ff6b6b; padding: 10px; margin: 10px 0;">',
-        '<h4 style="color: #333; margin-top: 0;">📝 notebook-grader feedback for the above cell</h4>'
+        '> ### 📝 notebook-grader feedback for above cell',
+        '> ___'
     ]
 
-    for problem in problems:
-        severity = problem['severity']
-        icon = severity_icons.get(severity, '❗')
+    rating, problems = parse_assistant_response(assistant_response)
+
+    if rating:
         markdown_content.extend([
-            f'<div style="margin-left: 10px;">',
-            f'{icon} <strong style="color: #e74c3c;">{severity.upper()}</strong>: {problem["type"]}',
-            f'<p style="margin-left: 20px; color: #666;">{problem["description"]}</p>',
-            '</div>'
+            f'> **Cell Quality Rating**: ({rating["quality"]}/5)',
+            '>',
+            f'> **Rationale**: {rating["rational"]}'
         ])
 
-    markdown_content.append('</div>')
+    if problems:
+        markdown_content.extend(['>', '> #### Identified Problems:'])
+        for problem in problems:
+            icon = severity_icons.get(problem['severity'].lower(), '❓')
+            markdown_content.extend([
+                '>',
+                f'> **{icon} {problem["type"]}** (Severity: {problem["severity"]})',
+                f'> {problem["description"]}'
+            ])
 
     return {
         'cell_type': 'markdown',
@@ -74,9 +120,87 @@ def create_grading_markdown_cell(problems: List[Dict[str, str]]) -> Dict[str, An
         'source': '\n'.join(markdown_content)
     }
 
-def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, vision_model: str | None=None, log_file: str | Path | None = None, auto: bool = False, output_notebook: Path | None = None) -> GradeNotebookResult:
-    # Store all problems identified throughout the notebook
-    all_problems: List[Dict[str, str]] = []
+def create_summary_markdown_cell(results: List[Dict[str, Any]], *, model: str, total_prompt_tokens: int, total_completion_tokens: int) -> Dict[str, Any]:
+    """Create a markdown cell containing a summary of the grading results."""
+    summary = calculate_grading_summary(results)
+
+    severity_icons = {
+        'low': '⚠️',
+        'medium': '⛔',
+        'high': '🚫',
+        'critical': '❌'
+    }
+
+    from datetime import datetime
+
+    markdown_content = [
+        '> ### 📊 Notebook Grading Summary',
+        '> ___',
+        f'> Total cells evaluated: **{len(results)}**',
+        '>',
+        f'> Average cell rating: **{summary["average_rating"]}/5**',
+        '>',
+        f'> Total problems identified: **{summary["total_problems"]}**',
+        '>',
+        '> #### Problems by Severity:'
+    ]
+
+    for severity, count in summary["problems_by_severity"].items():
+        if count > 0:
+            icon = severity_icons.get(severity.lower(), '❓')
+            markdown_content.append(f'>\n> {icon} **{severity.title()}**: {count}')
+    markdown_content.append('>')
+    markdown_content.append(f'> **Model used for grading**: {model}')
+    markdown_content.append('>')
+    markdown_content.append(f'> **Tokens used for grading**')
+    markdown_content.append(f'> - Prompt tokens: {total_prompt_tokens:,}')
+    markdown_content.append(f'> - Completion tokens: {total_completion_tokens:,}')
+    markdown_content.append('>')
+    markdown_content.append(f'> **Graded on**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+    markdown_content.append('>')
+
+    return {
+        'cell_type': 'markdown',
+        'metadata': {},
+        'source': '\n'.join(markdown_content)
+    }
+
+def calculate_grading_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Calculate summary statistics from grading results."""
+    if not results:
+        return {
+            "average_rating": 0.0,
+            "total_problems": 0,
+            "problems_by_severity": {"low": 0, "medium": 0, "high": 0, "critical": 0}
+        }
+
+    total_rating = 0
+    total_problems = 0
+    problems_by_severity = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+
+    for cell in results:
+        # Sum ratings, converting string to float
+        rating = cell["rating"].get("quality", "0")
+        total_rating += float(rating)
+
+        # Count problems by severity
+        for problem in cell["problems"]:
+            total_problems += 1
+            severity = problem["severity"].lower()
+            if severity in problems_by_severity:
+                problems_by_severity[severity] += 1
+
+    average_rating = total_rating / len(results)
+
+    return {
+        "average_rating": round(average_rating, 2),
+        "total_problems": total_problems,
+        "problems_by_severity": problems_by_severity
+    }
+
+def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, vision_model: str | None=None, log_file: str | Path | None = None, auto: bool = False, output_notebook: Path | None = None, output_json: Path) -> GradeNotebookResult:
+    # Store all cell results identified throughout the notebook
+    grading_results: List[Dict[str, Any]] = []
     """Perform a task based on the given instructions.
 
     Args:
@@ -95,12 +219,6 @@ def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, visio
 
     if not vision_model:
         vision_model = model
-
-    # Initialize conversation with system prompt
-    system_prompt = read_system_prompt()
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system_prompt}
-    ]
 
     # If it's a notebook in a GitHub repo then translate the notebook URL to raw URL
     if notebook_path_or_url.startswith('https://github.com/'):
@@ -147,69 +265,90 @@ def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, visio
         # Main conversation loop
         for cell_index in range(len(cells)):
             print(f'Grading cell {cell_index + 1} / {len(cells)}')
-            user_message_content = create_user_message_content_for_cell(cells[cell_index])
-            messages.append({"role": "user", "content": user_message_content})
-            assistant_response, messages2, prompt_tokens, completion_tokens = run_completion_with_retries(
+
+            # Initialize conversation with system prompt
+            system_prompt = read_system_prompt()
+            messages: List[Dict[str, Any]] = [
+                {"role": "system", "content": system_prompt}
+            ]
+
+            previous_cells_message_content = [
+                {'type': 'text', 'text': 'Here are the previous cells in the notebook for content'}
+            ]
+
+            for cell in cells[:cell_index]:
+                previous_cells_message_content = previous_cells_message_content + create_user_message_content_for_cell(cell)
+
+            messages.append({"role": "system", "content": previous_cells_message_content})
+
+            current_cell_message_content: List[Dict[str, Any]] = [
+                {'type': 'text', 'text': 'Here is the current cell in the notebook for content'}
+            ]
+
+            current_cell_message_content = current_cell_message_content + create_user_message_content_for_cell(cells[cell_index])
+
+            messages.append({"role": "system", "content": current_cell_message_content})
+
+            user_message = """
+Please evaluate the current cell as you have been instructed.
+"""
+
+            messages.append({"role": "user", "content": user_message})
+
+            assistant_response, _, prompt_tokens, completion_tokens = run_completion_with_retries(
                 messages=messages,
                 model=model,
                 num_retries=5
             )
             total_prompt_tokens += prompt_tokens
             total_completion_tokens += completion_tokens
-            for a in user_message_content:
+
+            # Parse and store results for this cell
+            rating, problems = parse_assistant_response(assistant_response)
+            cell_result = {
+                "cell_index": cell_index,
+                "rating": rating,
+                "problems": problems
+            }
+            grading_results.append(cell_result)
+
+            if output_notebook_obj:
+                grading_cell = create_grading_markdown_cell(assistant_response)
+                output_notebook_cells: List[Dict[str, Any]] = output_notebook_obj['cells']
+                output_notebook_cells.insert(output_cell_index + 1, grading_cell)
+                output_cell_index += 1
+
+            for a in current_cell_message_content:
                 if a['type'] == 'text':
                     print(a['text'])
                 elif a['type'] == 'image_url':
                     num_bytes = len(a['image_url']['url'])
                     print(f"ATTACHED IMAGE {num_bytes / 1000} kilobytes")
+            print('')
             print(f'Prompt tokens: {total_prompt_tokens}, Completion tokens: {total_completion_tokens}')
-            messages = messages2
             print('Assistant response:')
-            problems = parse_assistant_response(assistant_response)
+            print(assistant_response)
 
-            if problems is None:
-                print("No notebook_grader XML tags found in response for this cell.")
-            elif not problems:
-                print("No problems identified in this cell.")
-            else:
-                print('\n****************************************')
-                print('****************************************')
-                print("Identified problems in this cell:")
-                for problem in problems:
-                    print(f"\n[{problem['severity'].upper()}] {problem['type']}")
-                    print(f"Description: {problem['description']}")
-                    # Store problem with cell number for later display
-                    problem_with_cell = problem.copy()
-                    problem_with_cell['cell_number'] = str(cell_index + 1)
-                    all_problems.append(problem_with_cell)
-
-                # Add grading cell if problems were found
-                if output_notebook_obj:
-                    grading_cell = create_grading_markdown_cell(problems)
-                    output_notebook_cells: List[Dict[str, Any]] = output_notebook_obj['cells']
-                    output_notebook_cells.insert(output_cell_index + 1, grading_cell)
-                    output_cell_index += 1
+            # Print grading summary after each cell
+            summary = calculate_grading_summary(grading_results)
+            print("\nGrading Summary:")
+            print(f"Average Cell Rating: {summary['average_rating']:.2f}/5")
+            print(f"Total Problems: {summary['total_problems']}")
+            for severity, count in summary['problems_by_severity'].items():
+                if count > 0:
+                    print(f"- {severity.title()}: {count}")
+            print()
 
             # Write the output notebook if it was requested
             if output_notebook:
                 with open(str(output_notebook), 'w') as f:
                     json.dump(output_notebook_obj, f, indent=2)
 
-            # Print problem counts after cell evaluation
-            severity_counts = {}
-            for p in all_problems:
-                severity = p['severity'].lower()
-                severity_counts[severity] = severity_counts.get(severity, 0) + 1
-            print(f'Total problems identified: {len(all_problems)}')
-            for severity, count in severity_counts.items():
-                print(f'{severity.upper()}: {count}')
-
-            # press any key to continue
-            if not auto:
-                input("Press Enter to continue...")
-            print('')
-
             output_cell_index += 1
+
+            if not auto:
+                # wait for keyboard input
+                input("Press Enter to continue...")
     finally:
         # Restore original stdout and close log file
         if log_file_handle:
@@ -217,94 +356,34 @@ def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, visio
             log_file_handle.close()
 
     # Write the final output notebook if it was requested (really only necessary if there were no cells)
-    if output_notebook and output_notebook_obj:
+    if output_notebook and output_notebook_obj and grading_results:
+        summary_cell = create_summary_markdown_cell(grading_results, model=model, total_prompt_tokens=total_prompt_tokens, total_completion_tokens=total_completion_tokens)
+        output_notebook_obj['cells'].insert(0, summary_cell)
         with open(str(output_notebook), 'w') as f:
             json.dump(output_notebook_obj, f, indent=2)
 
-    # Display final problem totals
-    if all_problems:
-        severity_counts = {}
-        for p in all_problems:
-            severity = p['severity'].lower()
-            severity_counts[severity] = severity_counts.get(severity, 0) + 1
-        print('\nFinal problem totals:')
-        print(f'Total problems identified: {len(all_problems)}')
-        for severity, count in severity_counts.items():
-            print(f'{severity.upper()}: {count}')
+    # Write aggregated results to JSON
+    aggregate_results = {
+        "notebook_path": notebook_path_or_url,
+        "total_cells": len(cells),
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_vision_prompt_tokens": total_vision_prompt_tokens,
+        "total_vision_completion_tokens": total_vision_completion_tokens,
+        "cells": grading_results
+    }
 
-        print('\nAll identified problems:')
-        for problem in all_problems:
-            print(f"\nCell {problem['cell_number']}:")
-            print(f"[{problem['severity'].upper()}] {problem['type']}")
-            print(f"Description: {problem['description']}")
-    print('')  # Add blank line for readability
+    with open(output_json, "w") as f:
+        json.dump(aggregate_results, f, indent=2)
 
     return GradeNotebookResult(
         total_prompt_tokens=total_prompt_tokens,
         total_completion_tokens=total_completion_tokens,
         total_vision_prompt_tokens=total_vision_prompt_tokens,
         total_vision_completion_tokens=total_vision_completion_tokens,
-        output_notebook_path=output_notebook if output_notebook else None
+        output_notebook_path=output_notebook if output_notebook else None,
+        output_json_path=output_json
     )
-
-def parse_assistant_response(response: str) -> List[Dict[str, str]] | None:
-    """Parse the XML response from the assistant.
-
-    Args:
-        response: The raw response string from the assistant
-
-    Returns:
-        List of problems, each containing type, description, and severity,
-        or None if no notebook_grader tags were found
-    """
-    # Find the content between notebook_grader tags
-    start_tag = "<notebook_grader>"
-    end_tag = "</notebook_grader>"
-
-    start_idx = response.find(start_tag)
-    if start_idx == -1:
-        return None
-
-    end_idx = response.find(end_tag, start_idx)
-    if end_idx == -1:
-        return None
-
-    # Extract and clean the XML content
-    xml_content = response[start_idx:end_idx + len(end_tag)]
-
-    problems = []
-    # Look for problem blocks
-    while "<problem>" in xml_content:
-        prob_start = xml_content.find("<problem>")
-        prob_end = xml_content.find("</problem>", prob_start)
-        if prob_end == -1:
-            break
-
-        problem_xml = xml_content[prob_start:prob_end + len("</problem>")]
-
-        # Extract problem details
-        def extract_field(field_name: str) -> str:
-            start = problem_xml.find(f"<{field_name}>")
-            if start == -1:
-                return ""
-            start += len(f"<{field_name}>")
-            end = problem_xml.find(f"</{field_name}>", start)
-            if end == -1:
-                return ""
-            return problem_xml[start:end].strip()
-
-        problem = {
-            "type": extract_field("type"),
-            "description": extract_field("description"),
-            "severity": extract_field("severity")
-        }
-
-        if all(problem.values()):  # Only add if all fields are present
-            problems.append(problem)
-
-        xml_content = xml_content[prob_end + len("</problem>"):]
-
-    return problems
 
 def create_user_message_content_for_cell(cell: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Create user message content for a given cell."""
