@@ -50,23 +50,23 @@ class GradeNotebookResult:
     output_json_path: Path | None = None
 
 def parse_assistant_response(response: str) -> Tuple[Dict[str, str], List[Dict[str, str]]]:
-    """Parse the assistant's response to extract rating and problems.
+    """Parse the assistant's response to extract cell value and problems.
 
     Returns:
         Tuple containing:
-        - Rating dict with 'quality' and 'rational' keys
+        - Cell value dict with 'value_added' and 'rationale' keys
         - List of problem dicts, each with 'type', 'description', and 'severity' keys
     """
     import re
-    rating = {}
+    cell_value = {}
     problems = []
 
-    # Extract rating block
-    rating_match = re.search(r'<rating>\s*<quality>(.*?)</quality>\s*<rational>(.*?)</rational>\s*</rating>',
+    # Extract cell value
+    cell_value_match = re.search(r'<cell_value>\s*<rationale>(.*?)</rationale>\s*<value_added>(.*?)</value_added>\s*</cell_value>',
                            response, re.DOTALL)
-    if rating_match:
-        rating['quality'] = rating_match.group(1).strip()
-        rating['rational'] = rating_match.group(2).strip()
+    if cell_value_match:
+        cell_value['rationale'] = cell_value_match.group(1).strip()
+        cell_value['value_added'] = cell_value_match.group(2).strip()
 
     # Extract all problem blocks
     problem_matches = re.finditer(
@@ -80,7 +80,7 @@ def parse_assistant_response(response: str) -> Tuple[Dict[str, str], List[Dict[s
             'severity': match.group(3).strip()
         })
 
-    return rating, problems
+    return cell_value, problems
 
 def create_grading_markdown_cell(assistant_response: str) -> Dict[str, Any]:
     severity_icons = {
@@ -95,13 +95,13 @@ def create_grading_markdown_cell(assistant_response: str) -> Dict[str, Any]:
         '> ___'
     ]
 
-    rating, problems = parse_assistant_response(assistant_response)
+    cell_value, problems = parse_assistant_response(assistant_response)
 
-    if rating:
+    if cell_value:
         markdown_content.extend([
-            f'> **Cell Quality Rating**: ({rating["quality"]}/5)',
+            f'> **Value added**: {cell_value["value_added"]}',
             '>',
-            f'> **Rationale**: {rating["rational"]}'
+            f'> **Rationale**: {cell_value["rationale"]}'
         ])
 
     if problems:
@@ -140,7 +140,7 @@ def create_summary_markdown_cell(results: List[Dict[str, Any]], *, model: str, t
         '>',
         f'> **Total images in notebook**: {summary["total_images"]}',
         '>',
-        f'> **Average cell rating**: {summary["average_rating"]}/5',
+        f'> **Total value**: {summary["total_value"]}',
         '>',
         f'> **Total problems identified**: {summary["total_problems"]}',
         '>'
@@ -168,13 +168,13 @@ def calculate_grading_summary(results: List[Dict[str, Any]], *, notebook: Dict[s
     """Calculate summary statistics from grading results."""
     if not results:
         return {
-            "average_rating": 0.0,
+            "total_value": 0.0,
             "total_problems": 0,
             "problems_by_severity": {"low": 0, "medium": 0, "high": 0, "critical": 0},
             "total_images": 0
         }
 
-    total_rating = 0
+    total_value = 0
     total_problems = 0
     total_images = 0
     problems_by_severity = {"low": 0, "medium": 0, "high": 0, "critical": 0}
@@ -188,9 +188,9 @@ def calculate_grading_summary(results: List[Dict[str, Any]], *, notebook: Dict[s
                         total_images += 1
 
     for cell in results:
-        # Sum ratings, converting string to float
-        rating = cell["rating"].get("quality", "0")
-        total_rating += float(rating)
+        # Sum value, converting string to float
+        value_added = cell["cell_value"].get("value_added", "0")
+        total_value += float(value_added)
 
         # Count problems by severity
         for problem in cell["problems"]:
@@ -199,10 +199,8 @@ def calculate_grading_summary(results: List[Dict[str, Any]], *, notebook: Dict[s
             if severity in problems_by_severity:
                 problems_by_severity[severity] += 1
 
-    average_rating = total_rating / len(results)
-
     return {
-        "average_rating": round(average_rating, 2),
+        "total_value": total_value,
         "total_problems": total_problems,
         "problems_by_severity": problems_by_severity,
         "total_images": total_images
@@ -314,10 +312,10 @@ Please evaluate the current cell as you have been instructed.
             total_completion_tokens += completion_tokens
 
             # Parse and store results for this cell
-            rating, problems = parse_assistant_response(assistant_response)
+            cell_value, problems = parse_assistant_response(assistant_response)
             cell_result = {
                 "cell_index": cell_index,
-                "rating": rating,
+                "cell_value": cell_value,
                 "problems": problems
             }
             grading_results.append(cell_result)
@@ -342,7 +340,7 @@ Please evaluate the current cell as you have been instructed.
             # Print grading summary after each cell
             summary = calculate_grading_summary(grading_results, notebook=notebook)
             print("\nGrading Summary:")
-            print(f"Average Cell Rating: {summary['average_rating']:.2f}/5")
+            print(f"Total value: {summary['total_value']}")
             print(f"Total Problems: {summary['total_problems']}")
             for severity, count in summary['problems_by_severity'].items():
                 if count > 0:
@@ -380,6 +378,7 @@ Please evaluate the current cell as you have been instructed.
         "notebook_path": notebook_path_or_url,
         "total_cells": len(cells),
         "total_images": summary["total_images"],
+        "total_value": summary["total_value"],
         "total_prompt_tokens": total_prompt_tokens,
         "total_completion_tokens": total_completion_tokens,
         "total_vision_prompt_tokens": total_vision_prompt_tokens,
