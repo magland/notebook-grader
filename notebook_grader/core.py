@@ -53,7 +53,7 @@ def create_grading_markdown_cell(problems: List[Dict[str, str]]) -> Dict[str, An
 
     markdown_content = [
         '<div style="background-color: #f8f8f8; border-left: 4px solid #ff6b6b; padding: 10px; margin: 10px 0;">',
-        '<h4 style="color: #333; margin-top: 0;">📝 Notebook Grader Feedback</h4>'
+        '<h4 style="color: #333; margin-top: 0;">📝 notebook-grader feedback for the above cell</h4>'
     ]
 
     for problem in problems:
