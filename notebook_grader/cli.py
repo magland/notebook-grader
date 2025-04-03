@@ -1,6 +1,7 @@
 import click
 from pathlib import Path
-from .core import grade_notebook
+from .grade_notebook import grade_notebook
+from .evaluate_notebook import evaluate_notebook
 
 @click.group()
 def cli():
@@ -31,6 +32,19 @@ def grade_notebook_cmd(notebook_path_or_url: str, model: str | None, vision_mode
         log_file=log_file,
         auto=auto,
         output_notebook=output_notebook,
+        output_json=output_json
+    )
+
+@cli.command("evaluate-notebook")
+@click.argument('notebook_path_or_url', required=True)
+@click.option('--model', '-m', help='Model to use for completion (default: google/gemini-2.0-flash-001)')
+@click.option('--auto', is_flag=True, help='Run in automatic mode where no user input is required')
+@click.option('--output-json', required=True, type=click.Path(dir_okay=False, path_type=Path), help='Path to write the evaluation results JSON')
+def evaluate_notebook_cmd(notebook_path_or_url: str, model: str | None, auto: bool, output_json: Path):
+    evaluate_notebook(
+        notebook_path_or_url=notebook_path_or_url,
+        model=model,
+        auto=auto,
         output_json=output_json
     )
 
