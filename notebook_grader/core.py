@@ -120,9 +120,9 @@ def create_grading_markdown_cell(assistant_response: str) -> Dict[str, Any]:
         'source': '\n'.join(markdown_content)
     }
 
-def create_summary_markdown_cell(results: List[Dict[str, Any]], *, model: str, total_prompt_tokens: int, total_completion_tokens: int) -> Dict[str, Any]:
+def create_summary_markdown_cell(results: List[Dict[str, Any]], *, model: str, total_prompt_tokens: int, total_completion_tokens: int, notebook: Dict[str, Any]) -> Dict[str, Any]:
     """Create a markdown cell containing a summary of the grading results."""
-    summary = calculate_grading_summary(results)
+    summary = calculate_grading_summary(results, notebook=notebook)
 
     severity_icons = {
         'low': '⚠️',
@@ -136,13 +136,14 @@ def create_summary_markdown_cell(results: List[Dict[str, Any]], *, model: str, t
     markdown_content = [
         '> ### 📊 Notebook Grading Summary',
         '> ___',
-        f'> Total cells evaluated: **{len(results)}**',
+        f'> **Total cells evaluated**: {len(results)}',
         '>',
-        f'> Average cell rating: **{summary["average_rating"]}/5**',
+        f'> **Total images in notebook**: {summary["total_images"]}',
         '>',
-        f'> Total problems identified: **{summary["total_problems"]}**',
+        f'> **Average cell rating**: {summary["average_rating"]}/5',
         '>',
-        '> #### Problems by Severity:'
+        f'> **Total problems identified**: {summary["total_problems"]}',
+        '>'
     ]
 
     for severity, count in summary["problems_by_severity"].items():
@@ -152,9 +153,7 @@ def create_summary_markdown_cell(results: List[Dict[str, Any]], *, model: str, t
     markdown_content.append('>')
     markdown_content.append(f'> **Model used for grading**: {model}')
     markdown_content.append('>')
-    markdown_content.append(f'> **Tokens used for grading**')
-    markdown_content.append(f'> - Prompt tokens: {total_prompt_tokens:,}')
-    markdown_content.append(f'> - Completion tokens: {total_completion_tokens:,}')
+    markdown_content.append(f'> **Tokens used for grading**: {total_prompt_tokens} prompt + {total_completion_tokens} completion')
     markdown_content.append('>')
     markdown_content.append(f'> **Graded on**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     markdown_content.append('>')
@@ -165,18 +164,28 @@ def create_summary_markdown_cell(results: List[Dict[str, Any]], *, model: str, t
         'source': '\n'.join(markdown_content)
     }
 
-def calculate_grading_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+def calculate_grading_summary(results: List[Dict[str, Any]], *, notebook: Dict[str, Any]) -> Dict[str, Any]:
     """Calculate summary statistics from grading results."""
     if not results:
         return {
             "average_rating": 0.0,
             "total_problems": 0,
-            "problems_by_severity": {"low": 0, "medium": 0, "high": 0, "critical": 0}
+            "problems_by_severity": {"low": 0, "medium": 0, "high": 0, "critical": 0},
+            "total_images": 0
         }
 
     total_rating = 0
     total_problems = 0
+    total_images = 0
     problems_by_severity = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+
+    # Count total images in notebook
+    for cell in notebook['cells']:
+        if cell['cell_type'] == 'code':
+            for output in cell.get('outputs', []):
+                if output['output_type'] in ['display_data', 'execute_result']:
+                    if 'image/png' in output.get('data', {}):
+                        total_images += 1
 
     for cell in results:
         # Sum ratings, converting string to float
@@ -195,7 +204,8 @@ def calculate_grading_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "average_rating": round(average_rating, 2),
         "total_problems": total_problems,
-        "problems_by_severity": problems_by_severity
+        "problems_by_severity": problems_by_severity,
+        "total_images": total_images
     }
 
 def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, vision_model: str | None=None, log_file: str | Path | None = None, auto: bool = False, output_notebook: Path | None = None, output_json: Path) -> GradeNotebookResult:
@@ -330,7 +340,7 @@ Please evaluate the current cell as you have been instructed.
             print(assistant_response)
 
             # Print grading summary after each cell
-            summary = calculate_grading_summary(grading_results)
+            summary = calculate_grading_summary(grading_results, notebook=notebook)
             print("\nGrading Summary:")
             print(f"Average Cell Rating: {summary['average_rating']:.2f}/5")
             print(f"Total Problems: {summary['total_problems']}")
@@ -357,15 +367,19 @@ Please evaluate the current cell as you have been instructed.
 
     # Write the final output notebook if it was requested (really only necessary if there were no cells)
     if output_notebook and output_notebook_obj and grading_results:
-        summary_cell = create_summary_markdown_cell(grading_results, model=model, total_prompt_tokens=total_prompt_tokens, total_completion_tokens=total_completion_tokens)
+        summary_cell = create_summary_markdown_cell(grading_results, model=model, total_prompt_tokens=total_prompt_tokens, total_completion_tokens=total_completion_tokens, notebook=notebook)
         output_notebook_obj['cells'].insert(0, summary_cell)
         with open(str(output_notebook), 'w') as f:
             json.dump(output_notebook_obj, f, indent=2)
+
+    # Get final summary including total image count for JSON output
+    summary = calculate_grading_summary(grading_results, notebook=notebook)
 
     # Write aggregated results to JSON
     aggregate_results = {
         "notebook_path": notebook_path_or_url,
         "total_cells": len(cells),
+        "total_images": summary["total_images"],
         "total_prompt_tokens": total_prompt_tokens,
         "total_completion_tokens": total_completion_tokens,
         "total_vision_prompt_tokens": total_vision_prompt_tokens,
