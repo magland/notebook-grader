@@ -58,6 +58,8 @@ Use this if the code or text makes a scientific claim that is not supported by o
 <severity>severity</severity>
 </problem>
 
+Use this if the output text (usually a print statement) is of low information quality or is not consistent with its description in the rest of the notebook. For example, if the output text is a single number that is not explained in the context of the notebook, or if it is a string that does not provide any useful information.
+
 ## Bad output image
 
 <problem>
