@@ -1,7 +1,7 @@
 import json
 import sys
-from typing import List, Dict, Any, Tuple
 from pathlib import Path
+from typing import List, Dict, Any, Tuple
 import requests
 import copy
 import os
@@ -46,8 +46,8 @@ class GradeNotebookResult:
     total_completion_tokens: int
     total_vision_prompt_tokens: int
     total_vision_completion_tokens: int
-    output_notebook_path: Path | None = None
-    output_json_path: Path | None = None
+    output_notebook_path: str | None = None
+    output_json_path: str | None = None
 
 def parse_assistant_response(response: str) -> Tuple[Dict[str, str], List[Dict[str, str]]]:
     """Parse the assistant's response to extract cell value and problems.
@@ -206,7 +206,7 @@ def calculate_grading_summary(results: List[Dict[str, Any]], *, notebook: Dict[s
         "total_images": total_images
     }
 
-def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, vision_model: str | None=None, log_file: str | Path | None = None, auto: bool = False, output_notebook: Path | None = None, output_json: Path) -> GradeNotebookResult:
+def grade_notebook(*, notebook_path_or_url: str, model: str | None = None, vision_model: str | None=None, log_file: str | None = None, auto: bool = False, output_notebook: str | None = None, output_json: str) -> GradeNotebookResult:
     # Store all cell results identified throughout the notebook
     grading_results: List[Dict[str, Any]] = []
     """Perform a task based on the given instructions.
@@ -418,8 +418,12 @@ def create_user_message_content_for_cell(cell: Dict[str, Any]) -> List[Dict[str,
                     png_base64 = x['data']['image/png']
                     image_data_url = f"data:image/png;base64,{png_base64}"
                     content.append({'type': 'image_url', 'image_url': {'url': image_data_url}})
+                elif 'text/plain' in x['data']:
+                    content.append({'type': 'text', 'text': 'OUTPUT-TEXT: ' + ''.join(x['data']['text/plain'])})
+                elif 'text/html' in x['data']:
+                    content.append({'type': 'text', 'text': 'OUTPUT-HTML: ' + ''.join(x['data']['text/html'])})
                 else:
-                    print(f'Warning: got output type {output_type} but no image/png data')
+                    print(f'Warning: got output type {output_type} but no image/png data or text/plain or text/html')
             else:
                 print(f'Warning: unsupported output type {output_type}')
     else:
